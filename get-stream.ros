@@ -1,0 +1,70 @@
+;#!/bin/sh
+#|-*- mode:lisp -*-|#
+#|
+exec ros -Q -- $0 "$@"
+|#
+(ql-dist:install-dist "http://dist.ultralisp.org/"
+                      :prompt nil)
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp(ql:quickload '(:dexador :chirp :cl-ppcre :alexandria :dyna :local-time :uiop) :silent nil)
+  )
+
+(defpackage :ros.script.get-stream.3768037270
+  (:use :cl :dyna))
+(in-package :ros.script.get-stream.3768037270)
+
+(defvar *dyna* (make-dyna :credentials (cons (uiop:getenv "DYNAMO_TOKEN")
+                                             (uiop:getenv "DYNAMO_SECRET"))
+                          :region "ap-northeast-1"))
+(defclass muted-user ()
+  ((screen-name :key-type :HASH
+                :attr-name "screen_name"
+                :attr-type :S ; string
+               :initarg :screen-name
+                :accessor muted-user-screen-name)
+   (ttl-epoch :key-type :RANGE
+              :attr-name "ttl_epoch"
+              :attr-type :N ; number
+              :initarg :ttl-epoch
+              :initform (local-time:timestamp-to-unix (local-time:timestamp+ (local-time:now) 1 :hour))
+        :accessor muted-user-ttl-epoch))
+  (:dyna *dyna*)
+  (:table-name "twitter-muted-users-new")
+  (:metaclass <dyna-table-class>))
+
+;; (migrate-dyna-table 'muted-user)
+
+(defparameter *woeid-japan* "23424856")
+
+(defun make-joined-regex (sequence &key (key #'identity))
+  (ppcre:create-scanner
+   (reduce #'(lambda (x y) (format nil "~A|~A" x (funcall key y))) (rest sequence) :initial-value (funcall key (first sequence)))
+   :case-insensitive-mode t))
+
+(defun listup-tweet-containing-trend (statuses trends)
+  (let* ((trend-regex (make-joined-regex trends :key #'chirp:name)))
+    (remove-if-not #'(lambda (status) (ppcre:scan trend-regex (chirp:text status))) statuses)))
+
+(defun main (&rest argv)
+  (declare (ignorable argv))
+  (setf (dyna-credentials *dyna*)
+        (cons (uiop:getenv "DYNAMO_TOKEN")
+              (uiop:getenv "DYNAMO_SECRET")))
+  (format t "~S~%" *dyna*)
+  (setf chirp:*oauth-api-key* (uiop:getenv "OAUTH_API_KEY"))
+  (setf chirp:*oauth-api-secret* (uiop:getenv "OAUTH_API_SECRET"))
+  (setf chirp:*oauth-access-token* (uiop:getenv "OAUTH_ACCESS_TOKEN"))
+  (setf chirp:*oauth-access-secret* (uiop:getenv "OAUTH_ACCESS_SECRET"))
+  (let* ((result (chirp:statuses/home-timeline :count 200))
+         (trend (chirp:trends/place *woeid-japan*))
+         (tweet-containing-trend (listup-tweet-containing-trend result trend))
+         (trend-user-names (mapcar #'(lambda (status) (chirp:screen-name (chirp:user status))) tweet-containing-trend))
+         (trend-user-names-dedup (make-hash-table :test #'equal)))
+    (loop for name in trend-user-names
+          do (setf(gethash name trend-user-names-dedup) t))
+    (format t "~S" (alexandria:hash-table-keys trend-user-names-dedup))
+    (loop for name in (alexandria:hash-table-keys trend-user-names-dedup)
+          do (save-dyna (make-instance 'muted-user :screen-name name)))
+    "ok"))
+;;; vim: set ft=lisp lisp:

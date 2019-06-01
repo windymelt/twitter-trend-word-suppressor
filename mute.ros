@@ -1,0 +1,71 @@
+;#!/bin/sh
+#|-*- mode:lisp -*-|#
+#|
+exec ros -Q -- $0 "$@"
+|#
+(progn ;;init forms
+  (ros:ensure-asdf)
+  #+quicklisp(ql:quickload '(:jsown :chirp :arrow-macros) :silent t)
+  )
+
+(defpackage :ros.script.mute.3768046037
+  (:use :cl)
+  (:import-from :jsown :val)
+  (:import-from :arrow-macros :->))
+(in-package :ros.script.mute.3768046037)
+
+(in-package #:org.tymoonnext.chirp)
+(defparameter *mutes/create* "https://api.twitter.com/1.1/mutes/users/create.json")
+(defun mutes/create (&key screen-name user-id)
+  (assert (or screen-name user-id) () "Either SCREEN-NAME or USER-ID are required.")
+  (when user-id (assert (numberp user-id) () "USER-ID must be a number."))
+  (chirp::make-user (chirp:signed-request *mutes/create* :parameters (chirp::prepare* screen-name user-id) :method :POST)))
+(export 'mutes/create)
+(defparameter *mutes/destroy* "https://api.twitter.com/1.1/mutes/users/destroy.json")
+(defun mutes/destroy (&key screen-name user-id)
+  (assert (or screen-name user-id) () "Either SCREEN-NAME or USER-ID are required.")
+  (when user-id (assert (numberp user-id) () "USER-ID must be a number."))
+  (chirp::make-user (chirp:signed-request *mutes/destroy* :parameters (chirp::prepare* screen-name user-id) :method :POST)))
+(export 'mutes/destroy)
+(in-package :ros.script.mute.3768046037)
+
+(setf chirp:*oauth-api-key* (uiop:getenv "OAUTH_API_KEY"))
+(setf chirp:*oauth-api-secret* (uiop:getenv "OAUTH_API_SECRET"))
+
+(setf chirp:*oauth-access-token* (uiop:getenv "OAUTH_ACCESS_TOKEN"))
+(setf chirp:*oauth-access-secret* (uiop:getenv "OAUTH_ACCESS_SECRET"))
+
+(defun mute (screen-name)
+  (format t "Muting [~A]~%" screen-name)
+  (handler-case (chirp:mutes/create :screen-name screen-name)
+    (error (c) (format t "Error occurred while muting: ~A" c))))
+
+(defun unmute (screen-name)
+  (format t "Unmuting [~A]~%" screen-name)
+  (handler-case (chirp:mutes/destroy :screen-name screen-name)
+    (error (c) (format t "Error occurred while unmuting: ~A" c))))
+
+(defun filter-remove-event-by-name (events name)
+  (remove-if-not #'(lambda (record) (string= (jsown:val record "eventName") name))
+                 events))
+
+(defun events-to-screen-name (events)
+  (mapcar #'(lambda (ev) (-> ev
+                           (val "dynamodb")
+                           (val "Keys")
+                           (val "screen_name")
+                           (val "S")))
+          events))
+
+(defun main (handler event)
+  (declare (ignorable argv))
+  (format t "~S:~%~S~%" handler event)
+  (let* ((insert-events
+           (filter-remove-event-by-name (val event "Records") "INSERT"))
+         (inserted-names (events-to-screen-name insert-events))
+         (remove-events
+           (filter-remove-event-by-name (val event "Records") "REMOVE"))
+         (removed-names (events-to-screen-name remove-events)))
+    (dolist (name inserted-names) (mute name))
+    (dolist (name removed-names) (unmute name))))
+;;; vim: set ft=lisp lisp:
